@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-const SimplifiedTableDesigner = ({ onBack, onTableCreated }) => {
+const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
   const [tableName, setTableName] = useState('');
   const [columns, setColumns] = useState([
     { name: 'ID', dataType: 'BIGINT', isPrimaryKey: true, isNullable: false, isIdentity: true, isFixed: true }
@@ -122,8 +122,12 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated }) => {
       }
     }
     
-    // Generate SQL statement
-    let sql = `CREATE TABLE nexus.default.${currentTableName} (\n`;
+    // Get catalog and schema from dbConfig, or use defaults if not available
+    const catalog = dbConfig?.databricks?.catalog || 'nexus_dev';
+    const schema = dbConfig?.databricks?.schema || 'default';
+    
+    // Generate SQL statement with dynamic catalog and schema
+    let sql = `CREATE TABLE ${catalog}.${schema}.${currentTableName} (\n`;
     
     const columnDefinitions = currentColumns.map(col => {
       // Map the user-friendly data type to actual SQL data type
@@ -205,6 +209,13 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated }) => {
           </button>
         )}
       </div>
+      
+      {/* Display current database connection info */}
+      {dbConfig?.databricks && (
+        <div className="mb-6 p-3 bg-blue-50 rounded-md text-sm">
+          <p className="font-medium text-blue-800">Creating table in: {dbConfig.databricks.catalog || 'nexus'}.{dbConfig.databricks.schema || 'default'}</p>
+        </div>
+      )}
       
       <div className="mb-6">
         <label className="block text-sm font-medium mb-2">Table Name</label>
