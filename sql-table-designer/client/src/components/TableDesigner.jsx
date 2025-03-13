@@ -2,12 +2,21 @@ import React, { useState, useEffect } from 'react';
 
 const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
   const [tableName, setTableName] = useState('');
+  const [tableDescription, setTableDescription] = useState('');
   const [columns, setColumns] = useState([
     { name: 'ID', dataType: 'BIGINT', isPrimaryKey: true, isNullable: false, isIdentity: true, isFixed: true }
   ]);
   const [message, setMessage] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState('');
   const [generatedSQL, setGeneratedSQL] = useState('');
+  const [showListValuesModal, setShowListValuesModal] = useState(false);
+  const [showTableReferenceModal, setShowTableReferenceModal] = useState(false);
+  const [availableTables, setAvailableTables] = useState([]);
+  const [currentColumnIndex, setCurrentColumnIndex] = useState(null);
+  const [listValues, setListValues] = useState('');
+  const [selectedRefTable, setSelectedRefTable] = useState('');
+  const [selectedDisplayColumns, setSelectedDisplayColumns] = useState([]);
+  const [availableColumns, setAvailableColumns] = useState([]);
   
   // Simplified data types for non-technical users
   const userFriendlyDataTypes = [
@@ -23,7 +32,9 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
     'Number': 'DOUBLE',
     'Date': 'TIMESTAMP',
     'True/False': 'BOOLEAN',
-    'BIGINT': 'BIGINT' // Special type used only for the ID column
+    'BIGINT': 'BIGINT', // Special type used only for the ID column
+    'List': 'STRING',   // List column is just a text column with validation
+    'Reference': 'BIGINT' // Reference column is a BIGINT for foreign keys
   };
   
   // Effect to update the primary key name when table name changes
@@ -43,6 +54,30 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
       }
     }
   }, [tableName]);
+  
+  // Fetch available tables for reference columns
+  useEffect(() => {
+    const fetchAvailableTables = async () => {
+      try {
+        // In a real app, you would fetch this from your API
+        // For now, we'll use a mock list
+        // const response = await fetch('http://localhost:5000/api/tables');
+        // const data = await response.json();
+        // setAvailableTables(data.tables);
+        
+        // Mock data for development
+        setAvailableTables([
+          { id: 'customers', name: 'Customers' },
+          { id: 'products', name: 'Products' },
+          { id: 'orders', name: 'Orders' }
+        ]);
+      } catch (error) {
+        console.error('Error fetching available tables:', error);
+      }
+    };
+    
+    fetchAvailableTables();
+  }, []);
   
   const handleTableNameChange = (e) => {
     const newTableName = e.target.value;
@@ -96,6 +131,111 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
     setTimeout(() => generateSQL(), 0);
   };
   
+  const addListColumn = () => {
+    setCurrentColumnIndex(columns.length);
+    setListValues('');
+    setShowListValuesModal(true);
+  };
+  
+  const addTableReferenceColumn = () => {
+    setCurrentColumnIndex(columns.length);
+    setSelectedRefTable('');
+    setSelectedDisplayColumns([]);
+    setShowTableReferenceModal(true);
+  };
+  
+  const handleListValuesConfirm = () => {
+    // Create a new column with list values
+    const newColumn = {
+      name: '',
+      dataType: 'List',
+      isPrimaryKey: false,
+      isNullable: true,
+      isIdentity: false,
+      isFixed: false,
+      listValues: listValues.split(',').map(val => val.trim()).filter(val => val !== '')
+    };
+    
+    setColumns([...columns, newColumn]);
+    setShowListValuesModal(false);
+    
+    // Reset values for next time
+    setTimeout(() => {
+      setListValues('');
+      generateSQL();
+    }, 0);
+  };
+  
+  const handleTableReferenceConfirm = () => {
+    if (!selectedRefTable) {
+      return; // Require a selected table
+    }
+    
+    // Create a new column with reference info
+    const newColumn = {
+      name: `${selectedRefTable}ID`, // Default name based on referenced table
+      dataType: 'Reference',
+      isPrimaryKey: false,
+      isNullable: true,
+      isIdentity: false,
+      isFixed: false,
+      referenceTable: selectedRefTable,
+      displayColumns: selectedDisplayColumns
+    };
+    
+    setColumns([...columns, newColumn]);
+    setShowTableReferenceModal(false);
+    
+    // Reset values for next time
+    setTimeout(() => {
+      setSelectedRefTable('');
+      setSelectedDisplayColumns([]);
+      generateSQL();
+    }, 0);
+  };
+  
+  // Effect to fetch columns when a reference table is selected
+  useEffect(() => {
+    const fetchTableColumns = async () => {
+      if (!selectedRefTable) return;
+      
+      try {
+        // In a real app, you would fetch this from your API
+        // For now, we'll use mock data
+        // const response = await fetch(`http://localhost:5000/api/tables/${selectedRefTable}/structure`);
+        // const data = await response.json();
+        // setAvailableColumns(data.columns);
+        
+        // Mock data for development
+        if (selectedRefTable === 'customers') {
+          setAvailableColumns([
+            { name: 'CustomerID', type: 'BIGINT' },
+            { name: 'Name', type: 'STRING' },
+            { name: 'Email', type: 'STRING' },
+            { name: 'Phone', type: 'STRING' }
+          ]);
+        } else if (selectedRefTable === 'products') {
+          setAvailableColumns([
+            { name: 'ProductID', type: 'BIGINT' },
+            { name: 'ProductName', type: 'STRING' },
+            { name: 'Price', type: 'DOUBLE' },
+            { name: 'Category', type: 'STRING' }
+          ]);
+        } else {
+          setAvailableColumns([
+            { name: 'ID', type: 'BIGINT' },
+            { name: 'Name', type: 'STRING' },
+            { name: 'Description', type: 'STRING' }
+          ]);
+        }
+      } catch (error) {
+        console.error('Error fetching table columns:', error);
+      }
+    };
+    
+    fetchTableColumns();
+  }, [selectedRefTable]);
+  
   const removeColumn = (index) => {
     // Prevent removing the primary key column
     if (columns[index].isPrimaryKey) {
@@ -131,7 +271,15 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
     
     const columnDefinitions = currentColumns.map(col => {
       // Map the user-friendly data type to actual SQL data type
-      const sqlDataType = sqlDataTypeMap[col.dataType];
+      let sqlDataType;
+      
+      if (col.dataType === 'List') {
+        sqlDataType = 'STRING'; // List columns are stored as strings
+      } else if (col.dataType === 'Reference') {
+        sqlDataType = 'BIGINT'; // Reference columns are foreign keys
+      } else {
+        sqlDataType = sqlDataTypeMap[col.dataType];
+      }
       
       let definition = `  ${col.name} ${sqlDataType}`;
       
@@ -142,6 +290,13 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
       
       definition += col.isNullable ? '' : ' NOT NULL';
       
+      // Add a comment for list columns and reference columns
+      if (col.dataType === 'List' && col.listValues && col.listValues.length > 0) {
+        definition += ` /* ALLOWED VALUES: ${col.listValues.join(', ')} */`;
+      } else if (col.dataType === 'Reference' && col.referenceTable) {
+        definition += ` /* REFERENCES: ${col.referenceTable} (DISPLAY: ${col.displayColumns?.join(', ') || 'ID'}) */`;
+      }
+      
       return definition;
     }).join(',\n');
     
@@ -151,6 +306,17 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
     const primaryKeyColumns = currentColumns.filter(col => col.isPrimaryKey).map(col => col.name);
     if (primaryKeyColumns.length > 0) {
       sql += `,\n  CONSTRAINT PK_${currentTableName} PRIMARY KEY (\n    ${primaryKeyColumns.join(',\n    ')}\n  )`;
+    }
+    
+    // Add foreign key constraints for reference columns
+    const foreignKeys = currentColumns
+      .filter(col => col.dataType === 'Reference' && col.referenceTable)
+      .map((col, idx) => {
+        return `  CONSTRAINT FK_${currentTableName}_${col.referenceTable}_${idx} FOREIGN KEY (${col.name}) REFERENCES ${catalog}.${schema}.${col.referenceTable} (${col.referenceTable}ID)`;
+      });
+      
+    if (foreignKeys.length > 0) {
+      sql += ',\n' + foreignKeys.join(',\n');
     }
     
     sql += '\n) USING DELTA;';
@@ -172,17 +338,33 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
     
     // In a real application, you would send this SQL to your backend API
     try {
-      // Call the API endpoint
+      // Call the API endpoint with additional metadata
       const response = await fetch('http://localhost:5000/api/create-table', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sql })
+        body: JSON.stringify({ 
+          sql,
+          description: tableDescription,
+          createdBy: 'UI', // You could replace this with actual user info once you implement auth
+          tableMetadata: {
+            columns: columns.map(col => ({
+              name: col.name,
+              dataType: col.dataType,
+              isPrimaryKey: col.isPrimaryKey,
+              isNullable: col.isNullable,
+              isIdentity: col.isIdentity,
+              listValues: col.listValues,
+              referenceTable: col.referenceTable,
+              displayColumns: col.displayColumns
+            }))
+          }
+        })
       });
       
       const data = await response.json();
       
       if (response.ok) {
-        setMessage(`Table "${tableName}" created successfully!`);
+        setMessage(`Table "${tableName}" created and registered successfully!`);
         if (onTableCreated) {
           onTableCreated(); // Call the callback to refresh tables list
         }
@@ -194,6 +376,179 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // Extract ListValuesModal as a separate component to avoid hooks rules issues
+  const ListValuesModal = () => {
+    // Move the conditional return after the hooks
+    const [localListValues, setLocalListValues] = useState(listValues);
+    
+    const handleConfirm = () => {
+      // Update the parent state only when confirming
+      setListValues(localListValues);
+      handleListValuesConfirm();
+    };
+    
+    if (!showListValuesModal) return null;
+    
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white p-6 rounded-lg shadow-lg w-96">
+          <h2 className="text-xl font-semibold mb-4">Configure List Column</h2>
+          <p className="text-sm text-gray-600 mb-4">
+            Enter the allowed values for this column, separated by commas.
+          </p>
+          <textarea
+            value={localListValues}
+            onChange={(e) => setLocalListValues(e.target.value)}
+            className="w-full p-2 border rounded-md h-32 mb-4"
+            placeholder="value1, value2, value3"
+            autoFocus
+          />
+          <div className="flex justify-end space-x-2">
+            <button
+              onClick={() => setShowListValuesModal(false)}
+              className="px-3 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleConfirm}
+              className="px-3 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600"
+              disabled={!localListValues.trim()}
+            >
+              Add Column
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+  
+  // Extract TableReferenceModal as a separate component to avoid hooks rules issues
+  const TableReferenceModal = () => {
+    // Move hooks to the top level of the component
+    const [localSelectedRefTable, setLocalSelectedRefTable] = useState(selectedRefTable);
+    const [localSelectedDisplayColumns, setLocalSelectedDisplayColumns] = useState(selectedDisplayColumns);
+    
+    // Effect to synchronize with parent state when the modal opens
+    useEffect(() => {
+      setLocalSelectedRefTable(selectedRefTable);
+      setLocalSelectedDisplayColumns(selectedDisplayColumns);
+    }, [showTableReferenceModal]);
+    
+    // Effect to fetch columns when reference table changes (using local state)
+    useEffect(() => {
+      if (!localSelectedRefTable) return;
+      
+      // Fetch columns logic remains the same but using localSelectedRefTable
+      const fetchMockColumns = () => {
+        if (localSelectedRefTable === 'customers') {
+          setAvailableColumns([
+            { name: 'CustomerID', type: 'BIGINT' },
+            { name: 'Name', type: 'STRING' },
+            { name: 'Email', type: 'STRING' },
+            { name: 'Phone', type: 'STRING' }
+          ]);
+        } else if (localSelectedRefTable === 'products') {
+          setAvailableColumns([
+            { name: 'ProductID', type: 'BIGINT' },
+            { name: 'ProductName', type: 'STRING' },
+            { name: 'Price', type: 'DOUBLE' },
+            { name: 'Category', type: 'STRING' }
+          ]);
+        } else {
+          setAvailableColumns([
+            { name: 'ID', type: 'BIGINT' },
+            { name: 'Name', type: 'STRING' },
+            { name: 'Description', type: 'STRING' }
+          ]);
+        }
+      };
+      
+      fetchMockColumns();
+    }, [localSelectedRefTable]);
+    
+    const handleConfirm = () => {
+      // Update parent state only when confirming
+      setSelectedRefTable(localSelectedRefTable);
+      setSelectedDisplayColumns(localSelectedDisplayColumns);
+      handleTableReferenceConfirm();
+    };
+    
+    const handleCheckboxChange = (columnName, isChecked) => {
+      if (isChecked) {
+        setLocalSelectedDisplayColumns([...localSelectedDisplayColumns, columnName]);
+      } else {
+        setLocalSelectedDisplayColumns(localSelectedDisplayColumns.filter(c => c !== columnName));
+      }
+    };
+    
+    // Conditional render after all the hooks
+    if (!showTableReferenceModal) return null;
+    
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white p-6 rounded-lg shadow-lg w-96">
+          <h2 className="text-xl font-semibold mb-4">Configure Reference Column</h2>
+          <div className="mb-4">
+            <label className="block text-sm font-medium mb-2">Select Reference Table</label>
+            <select
+              value={localSelectedRefTable}
+              onChange={(e) => setLocalSelectedRefTable(e.target.value)}
+              className="w-full p-2 border rounded-md"
+              autoFocus
+            >
+              <option value="">-- Select a table --</option>
+              {availableTables.map(table => (
+                <option key={table.id} value={table.id}>{table.name}</option>
+              ))}
+            </select>
+          </div>
+          
+          {localSelectedRefTable && (
+            <div className="mb-4">
+              <label className="block text-sm font-medium mb-2">Select Display Columns</label>
+              <div className="max-h-40 overflow-y-auto border rounded-md p-2">
+                {availableColumns.map(column => (
+                  <div key={column.name} className="flex items-center py-1">
+                    <input
+                      type="checkbox"
+                      id={`col-${column.name}`}
+                      checked={localSelectedDisplayColumns.includes(column.name)}
+                      onChange={(e) => handleCheckboxChange(column.name, e.target.checked)}
+                      className="mr-2"
+                    />
+                    <label htmlFor={`col-${column.name}`} className="text-sm">
+                      {column.name} ({column.type})
+                    </label>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                These columns will be displayed when selecting values for this reference.
+              </p>
+            </div>
+          )}
+          
+          <div className="flex justify-end space-x-2">
+            <button
+              onClick={() => setShowTableReferenceModal(false)}
+              className="px-3 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleConfirm}
+              className="px-3 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600"
+              disabled={!localSelectedRefTable}
+            >
+              Add Column
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   };
   
   return (
@@ -227,25 +582,50 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
           placeholder="Enter table name"
         />
       </div>
+
+      <div className="mb-6">
+        <label className="block text-sm font-medium mb-2">Table Description</label>
+        <input
+          type="text"
+          value={tableDescription}
+          onChange={(e) => setTableDescription(e.target.value)}
+          className="w-full p-2 border rounded-md"
+          placeholder="Enter a description for this table (optional)"
+        />
+      </div>
       
       <div className="mb-6">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-xl font-semibold">Columns</h2>
-          <button 
-            onClick={addColumn}
-            className="bg-blue-500 text-white px-3 py-1 rounded-md hover:bg-blue-600"
-          >
-            Add Column
-          </button>
+          <div className="flex gap-2">
+            <button 
+              onClick={addColumn}
+              className="bg-blue-500 text-white px-3 py-1 rounded-md hover:bg-blue-600"
+            >
+              Add Column
+            </button>
+            <button 
+              onClick={addListColumn}
+              className="bg-green-500 text-white px-3 py-1 rounded-md hover:bg-green-600"
+            >
+              Add List Column
+            </button>
+            <button 
+              onClick={addTableReferenceColumn}
+              className="bg-purple-500 text-white px-3 py-1 rounded-md hover:bg-purple-600"
+            >
+              Add Table Reference
+            </button>
+          </div>
         </div>
         
         {/* Modern Grid Layout for Column Definitions */}
         <div className="bg-gray-50 rounded-lg shadow overflow-hidden">
           {/* Header Row */}
           <div className="grid grid-cols-12 gap-4 px-6 py-3 bg-gray-200 font-medium text-gray-700">
-            <div className="col-span-6">Column Name</div>
+            <div className="col-span-5">Column Name</div>
             <div className="col-span-3">Data Type</div>
-            <div className="col-span-1">Can be empty?</div>
+            <div className="col-span-2">Details</div>
             <div className="col-span-2 text-right">Actions</div>
           </div>
           
@@ -253,19 +633,25 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
           {columns.map((column, index) => (
             <div 
               key={index} 
-              className={`grid grid-cols-12 gap-4 px-6 py-4 items-center border-b border-gray-200 hover:bg-gray-100 transition-colors ${column.isPrimaryKey ? 'bg-blue-50' : ''}`}
+              className={`grid grid-cols-12 gap-4 px-6 py-4 items-center border-b border-gray-200 hover:bg-gray-100 transition-colors ${column.isPrimaryKey ? 'bg-blue-50' : column.dataType === 'List' ? 'bg-green-50' : column.dataType === 'Reference' ? 'bg-purple-50' : ''}`}
             >
-              <div className="col-span-6">
+              <div className="col-span-5">
                 <div className="flex items-center gap-2">
                   {column.isPrimaryKey && 
                     <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs font-medium rounded">ID</span>
+                  }
+                  {column.dataType === 'List' && 
+                    <span className="px-2 py-1 bg-green-100 text-green-800 text-xs font-medium rounded">LIST</span>
+                  }
+                  {column.dataType === 'Reference' && 
+                    <span className="px-2 py-1 bg-purple-100 text-purple-800 text-xs font-medium rounded">REF</span>
                   }
                   <input
                     type="text"
                     value={column.name}
                     onChange={(e) => handleColumnChange(index, 'name', e.target.value)}
                     className="w-full p-2 border rounded-md"
-                    placeholder={column.isPrimaryKey ? "ID column (auto-generated)" : "Column name"}
+                    placeholder={column.isPrimaryKey ? "ID column (auto-generated)" : column.dataType === 'Reference' ? "Reference column" : "Column name"}
                   />
                 </div>
               </div>
@@ -274,6 +660,14 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
                 {column.isFixed ? (
                   <div className="p-2 bg-gray-100 border rounded-md text-gray-600">
                     ID (auto-incrementing)
+                  </div>
+                ) : column.dataType === 'List' ? (
+                  <div className="p-2 bg-green-100 border rounded-md text-green-800">
+                    List of Values
+                  </div>
+                ) : column.dataType === 'Reference' ? (
+                  <div className="p-2 bg-purple-100 border rounded-md text-purple-800">
+                    Table Reference
                   </div>
                 ) : (
                   <select
@@ -288,15 +682,28 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
                 )}
               </div>
               
-              <div className="col-span-1 text-center">
-                <input
-                  type="checkbox"
-                  checked={column.isNullable}
-                  onChange={(e) => handleColumnChange(index, 'isNullable', e.target.checked)}
-                  className="w-4 h-4 accent-blue-500"
-                  disabled={column.isPrimaryKey}
-                  title={column.isPrimaryKey ? "ID column cannot be empty" : ""}
-                />
+              <div className="col-span-2">
+                {column.dataType === 'List' ? (
+                  <div className="text-xs text-gray-600">
+                    {column.listValues?.length} values defined
+                  </div>
+                ) : column.dataType === 'Reference' ? (
+                  <div className="text-xs text-gray-600">
+                    References: {column.referenceTable}
+                  </div>
+                ) : (
+                  <div className="flex items-center">
+                    <span className="text-xs mr-2">Can be empty:</span>
+                    <input
+                      type="checkbox"
+                      checked={column.isNullable}
+                      onChange={(e) => handleColumnChange(index, 'isNullable', e.target.checked)}
+                      className="w-4 h-4 accent-blue-500"
+                      disabled={column.isPrimaryKey}
+                      title={column.isPrimaryKey ? "ID column cannot be empty" : ""}
+                    />
+                  </div>
+                )}
               </div>
               
               <div className="col-span-2 text-right">
@@ -312,13 +719,25 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
             </div>
           ))}
           
-          {/* Add Column Button (Bottom) */}
-          <div className="px-6 py-3 bg-gray-100">
+          {/* Add Column Buttons (Bottom) */}
+          <div className="px-6 py-3 bg-gray-100 flex gap-4">
             <button 
               onClick={addColumn}
               className="text-blue-500 hover:text-blue-700 text-sm font-medium"
             >
               + Add Another Column
+            </button>
+            <button 
+              onClick={addListColumn}
+              className="text-green-500 hover:text-green-700 text-sm font-medium"
+            >
+              + Add List Column
+            </button>
+            <button 
+              onClick={addTableReferenceColumn}
+              className="text-purple-500 hover:text-purple-700 text-sm font-medium"
+            >
+              + Add Table Reference
             </button>
           </div>
         </div>
@@ -344,6 +763,10 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
           </div>
         )}
       </div>
+      
+      {/* Render modals */}
+      <ListValuesModal />
+      <TableReferenceModal />
     </div>
   );
 };
