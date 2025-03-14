@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
   const [tableName, setTableName] = useState('');
@@ -59,20 +59,39 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
   useEffect(() => {
     const fetchAvailableTables = async () => {
       try {
-        // In a real app, you would fetch this from your API
-        // For now, we'll use a mock list
-        // const response = await fetch('http://localhost:5000/api/tables');
-        // const data = await response.json();
-        // setAvailableTables(data.tables);
+        // Fetch real tables from the API
+        const response = await fetch('http://localhost:5000/api/tables');
         
-        // Mock data for development
+        if (response.ok) {
+          const data = await response.json();
+          
+          if (data.tables) {
+            // Transform the response to the format we need
+            const formattedTables = data.tables.map(t => ({
+              id: t.id,
+              name: t.name
+            }));
+            
+            setAvailableTables(formattedTables);
+            console.log('Available tables loaded:', formattedTables.length);
+          }
+        } else {
+          console.error('Error fetching tables:', await response.text());
+          // Set fallback mock data if fetch fails
+          setAvailableTables([
+            { id: 'customers', name: 'Customers' },
+            { id: 'products', name: 'Products' },
+            { id: 'orders', name: 'Orders' }
+          ]);
+        }
+      } catch (error) {
+        console.error('Error fetching available tables:', error);
+        // Set fallback mock data if fetch fails
         setAvailableTables([
           { id: 'customers', name: 'Customers' },
           { id: 'products', name: 'Products' },
           { id: 'orders', name: 'Orders' }
         ]);
-      } catch (error) {
-        console.error('Error fetching available tables:', error);
       }
     };
     
@@ -425,92 +444,167 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
     );
   };
   
-  // Extract TableReferenceModal as a separate component to avoid hooks rules issues
-  const TableReferenceModal = () => {
-    // Move hooks to the top level of the component
-    const [localSelectedRefTable, setLocalSelectedRefTable] = useState(selectedRefTable);
-    const [localSelectedDisplayColumns, setLocalSelectedDisplayColumns] = useState(selectedDisplayColumns);
-    
-    // Effect to synchronize with parent state when the modal opens
-    useEffect(() => {
-      setLocalSelectedRefTable(selectedRefTable);
-      setLocalSelectedDisplayColumns(selectedDisplayColumns);
-    }, [showTableReferenceModal]);
-    
-    // Effect to fetch columns when reference table changes (using local state)
-    useEffect(() => {
-      if (!localSelectedRefTable) return;
-      
-      // Fetch columns logic remains the same but using localSelectedRefTable
-      const fetchMockColumns = () => {
-        if (localSelectedRefTable === 'customers') {
-          setAvailableColumns([
-            { name: 'CustomerID', type: 'BIGINT' },
-            { name: 'Name', type: 'STRING' },
-            { name: 'Email', type: 'STRING' },
-            { name: 'Phone', type: 'STRING' }
-          ]);
-        } else if (localSelectedRefTable === 'products') {
-          setAvailableColumns([
-            { name: 'ProductID', type: 'BIGINT' },
-            { name: 'ProductName', type: 'STRING' },
-            { name: 'Price', type: 'DOUBLE' },
-            { name: 'Category', type: 'STRING' }
-          ]);
-        } else {
-          setAvailableColumns([
-            { name: 'ID', type: 'BIGINT' },
-            { name: 'Name', type: 'STRING' },
-            { name: 'Description', type: 'STRING' }
-          ]);
-        }
-      };
-      
-      fetchMockColumns();
-    }, [localSelectedRefTable]);
-    
-    const handleConfirm = () => {
-      // Update parent state only when confirming
-      setSelectedRefTable(localSelectedRefTable);
-      setSelectedDisplayColumns(localSelectedDisplayColumns);
-      handleTableReferenceConfirm();
+// Extract TableReferenceModal as a separate component with stable state handling
+const TableReferenceModal = () => {
+  // Create stable state with useRef for tracking component mounting status
+  const mounted = useRef(false);
+  
+  // Local state for the modal
+  const [localSelectedRefTable, setLocalSelectedRefTable] = useState('');
+  const [localSelectedDisplayColumns, setLocalSelectedDisplayColumns] = useState([]);
+  const [isLoadingColumns, setIsLoadingColumns] = useState(false);
+  
+  // Effect that runs once when component mounts
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
     };
+  }, []);
+  
+  // Effect to synchronize with parent state when the modal is opened
+  useEffect(() => {
+    if (showTableReferenceModal) {
+      // Initialize local state from parent state
+      setLocalSelectedRefTable(selectedRefTable || '');
+      setLocalSelectedDisplayColumns(selectedDisplayColumns || []);
+    }
+  }, [showTableReferenceModal]);
+  
+  // Effect to fetch columns when a reference table is selected
+  useEffect(() => {
+    if (!localSelectedRefTable) return;
     
-    const handleCheckboxChange = (columnName, isChecked) => {
-      if (isChecked) {
-        setLocalSelectedDisplayColumns([...localSelectedDisplayColumns, columnName]);
-      } else {
-        setLocalSelectedDisplayColumns(localSelectedDisplayColumns.filter(c => c !== columnName));
+    const fetchTableColumns = async () => {
+      setIsLoadingColumns(true);
+      
+      try {
+        // Fetch the actual table structure from the API
+        const response = await fetch(`http://localhost:5000/api/tables/${localSelectedRefTable}/structure`);
+        
+        if (response.ok && mounted.current) {
+          const data = await response.json();
+          if (data.columns) {
+            setAvailableColumns(data.columns.map(col => ({
+              name: col.name,
+              type: col.dataType
+            })));
+          }
+        } else {
+          console.error('Error fetching table structure:', response.statusText);
+          // Only use fallback in case of error
+          setFallbackColumns(localSelectedRefTable);
+        }
+      } catch (error) {
+        console.error('Error fetching table columns:', error);
+        // Use fallback data if fetch fails
+        setFallbackColumns(localSelectedRefTable);
+      } finally {
+        if (mounted.current) {
+          setIsLoadingColumns(false);
+        }
       }
     };
     
-    // Conditional render after all the hooks
-    if (!showTableReferenceModal) return null;
+    fetchTableColumns();
+  }, [localSelectedRefTable]);
+  
+  // Fallback function for mock data if API fails
+  const setFallbackColumns = (tableName) => {
+    if (!mounted.current) return;
     
-    return (
-      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white p-6 rounded-lg shadow-lg w-96">
-          <h2 className="text-xl font-semibold mb-4">Configure Reference Column</h2>
+    if (tableName === 'customers') {
+      setAvailableColumns([
+        { name: 'CustomerID', type: 'BIGINT' },
+        { name: 'Name', type: 'STRING' },
+        { name: 'Email', type: 'STRING' },
+        { name: 'Phone', type: 'STRING' }
+      ]);
+    } else if (tableName === 'products') {
+      setAvailableColumns([
+        { name: 'ProductID', type: 'BIGINT' },
+        { name: 'ProductName', type: 'STRING' },
+        { name: 'Price', type: 'DOUBLE' },
+        { name: 'Category', type: 'STRING' }
+      ]);
+    } else if (tableName === 'employee') {
+      setAvailableColumns([
+        { name: 'EmployeeID', type: 'BIGINT' },
+        { name: 'LastName', type: 'STRING' },
+        { name: 'FirstName', type: 'STRING' },
+        { name: 'FavoriteHobby', type: 'STRING' },
+        { name: 'HireDate', type: 'TIMESTAMP' },
+        { name: 'Salary', type: 'DOUBLE' }
+      ]);
+    } else {
+      setAvailableColumns([
+        { name: 'ID', type: 'BIGINT' },
+        { name: 'Name', type: 'STRING' },
+        { name: 'Description', type: 'STRING' }
+      ]);
+    }
+  };
+  
+  const handleCheckboxChange = (columnName, isChecked) => {
+    if (isChecked) {
+      setLocalSelectedDisplayColumns(prev => [...prev, columnName]);
+    } else {
+      setLocalSelectedDisplayColumns(prev => prev.filter(c => c !== columnName));
+    }
+  };
+  
+  const handleConfirm = () => {
+    // Update parent state only when confirming
+    setSelectedRefTable(localSelectedRefTable);
+    setSelectedDisplayColumns(localSelectedDisplayColumns);
+    handleTableReferenceConfirm();
+  };
+  
+  // Don't render anything if modal is not visible
+  if (!showTableReferenceModal) {
+    return null;
+  }
+  
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white p-6 rounded-lg shadow-lg w-96">
+        <h2 className="text-xl font-semibold mb-4">Configure Reference Column</h2>
+        <div className="mb-4">
+          <label className="block text-sm font-medium mb-2">Select Reference Table</label>
+          <select
+            value={localSelectedRefTable}
+            onChange={(e) => setLocalSelectedRefTable(e.target.value)}
+            className="w-full p-2 border rounded-md"
+            autoFocus
+          >
+            <option value="">-- Select a table --</option>
+            {availableTables.map(table => (
+              <option key={table.id} value={table.id}>{table.name}</option>
+            ))}
+          </select>
+        </div>
+        
+        {localSelectedRefTable && (
           <div className="mb-4">
-            <label className="block text-sm font-medium mb-2">Select Reference Table</label>
-            <select
-              value={localSelectedRefTable}
-              onChange={(e) => setLocalSelectedRefTable(e.target.value)}
-              className="w-full p-2 border rounded-md"
-              autoFocus
-            >
-              <option value="">-- Select a table --</option>
-              {availableTables.map(table => (
-                <option key={table.id} value={table.id}>{table.name}</option>
-              ))}
-            </select>
-          </div>
-          
-          {localSelectedRefTable && (
-            <div className="mb-4">
-              <label className="block text-sm font-medium mb-2">Select Display Columns</label>
-              <div className="max-h-40 overflow-y-auto border rounded-md p-2">
-                {availableColumns.map(column => (
+            <label className="block text-sm font-medium mb-2">
+              Select Display Columns
+              {isLoadingColumns && (
+                <span className="inline-block ml-2 text-blue-500">
+                  <svg className="animate-spin h-4 w-4 inline mr-1" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  Loading...
+                </span>
+              )}
+            </label>
+            <div className="max-h-40 overflow-y-auto border rounded-md p-2">
+              {availableColumns.length === 0 ? (
+                <div className="text-center text-gray-500 py-2">
+                  {isLoadingColumns ? 'Loading columns...' : 'No columns found'}
+                </div>
+              ) : (
+                availableColumns.map(column => (
                   <div key={column.name} className="flex items-center py-1">
                     <input
                       type="checkbox"
@@ -523,34 +617,35 @@ const SimplifiedTableDesigner = ({ onBack, onTableCreated, dbConfig }) => {
                       {column.name} ({column.type})
                     </label>
                   </div>
-                ))}
-              </div>
-              <p className="text-xs text-gray-500 mt-1">
-                These columns will be displayed when selecting values for this reference.
-              </p>
+                ))
+              )}
             </div>
-          )}
-          
-          <div className="flex justify-end space-x-2">
-            <button
-              onClick={() => setShowTableReferenceModal(false)}
-              className="px-3 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleConfirm}
-              className="px-3 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600"
-              disabled={!localSelectedRefTable}
-            >
-              Add Column
-            </button>
+            <p className="text-xs text-gray-500 mt-1">
+              These columns will be displayed when selecting values for this reference.
+            </p>
           </div>
+        )}
+        
+        <div className="flex justify-end space-x-2">
+          <button
+            onClick={() => setShowTableReferenceModal(false)}
+            className="px-3 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleConfirm}
+            className="px-3 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600"
+            disabled={!localSelectedRefTable || isLoadingColumns}
+          >
+            Add Column
+          </button>
         </div>
       </div>
-    );
-  };
-  
+    </div>
+  );
+};
+
   return (
     <div className="max-w-6xl mx-auto p-6 bg-white rounded-lg shadow-lg">
       <div className="flex justify-between items-center mb-6">

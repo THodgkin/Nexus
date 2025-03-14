@@ -18,6 +18,11 @@ const DataGridView = ({ table, onBack }) => {
   const [validationErrors, setValidationErrors] = useState({});
   const [primaryKeyColumn, setPrimaryKeyColumn] = useState(null);
   const [debugInfo, setDebugInfo] = useState(null);
+  
+  // States for reference lookup data
+  const [referenceTables, setReferenceTables] = useState({});
+  const [referenceData, setReferenceData] = useState({});
+  const [isLoadingReference, setIsLoadingReference] = useState(false);
 
   // Helper function to display debug information
   const logDebug = (operation, info) => {
@@ -36,16 +41,26 @@ const DataGridView = ({ table, onBack }) => {
   }, [table]);
 
   // Map SQL type to our user-friendly types
-  const mapSqlTypeToFriendlyType = (sqlType) => {
+  const mapSqlTypeToFriendlyType = (sqlType, columnComment) => {
     if (!sqlType) return 'Text';
     
     sqlType = sqlType.toUpperCase();
     
-    if (sqlType.includes('VARCHAR') || sqlType.includes('CHAR') || sqlType.includes('TEXT')) {
+    // Check for List column type based on comment
+    if (columnComment && columnComment.includes('ALLOWED VALUES:')) {
+      return 'List';
+    }
+    
+    // Check for Reference column type based on comment
+    if (columnComment && columnComment.includes('REFERENCES:')) {
+      return 'Reference';
+    }
+    
+    if (sqlType.includes('VARCHAR') || sqlType.includes('CHAR') || sqlType.includes('TEXT') || sqlType.includes('STRING')) {
       return sqlType.includes('MAX') ? 'Long Text' : 'Text';
     }
     if (sqlType.includes('INT') || sqlType.includes('NUMERIC') || sqlType.includes('DECIMAL') || 
-        sqlType.includes('FLOAT') || sqlType.includes('REAL') || sqlType.includes('MONEY')) {
+        sqlType.includes('FLOAT') || sqlType.includes('REAL') || sqlType.includes('MONEY') || sqlType.includes('DOUBLE')) {
       return 'Number';
     }
     if (sqlType.includes('DATE') || sqlType.includes('TIME')) {
@@ -56,6 +71,30 @@ const DataGridView = ({ table, onBack }) => {
     }
     
     return 'Text'; // Default
+  };
+
+  // Extract list values from column comment
+  const extractListValues = (comment) => {
+    if (!comment || !comment.includes('ALLOWED VALUES:')) return [];
+    
+    const valuesPart = comment.split('ALLOWED VALUES:')[1].trim();
+    return valuesPart.split(',').map(val => val.trim());
+  };
+  
+  // Extract reference table and display columns from comment
+  const extractReferenceInfo = (comment) => {
+    if (!comment || !comment.includes('REFERENCES:')) return { table: '', displayColumns: [] };
+    
+    const parts = comment.split('REFERENCES:')[1].trim();
+    const tableMatch = parts.match(/([^\s(]+)/); // Get the table name
+    const displayMatch = parts.match(/DISPLAY:\s*([^)]+)/); // Get the display columns
+    
+    const tableName = tableMatch ? tableMatch[1].trim() : '';
+    const displayColumns = displayMatch 
+      ? displayMatch[1].split(',').map(col => col.trim()) 
+      : ['ID'];
+    
+    return { table: tableName, displayColumns };
   };
 
   // Fetch table structure (columns)
@@ -75,11 +114,29 @@ const DataGridView = ({ table, onBack }) => {
       });
       
       if (response.ok) {
-        // Map the SQL types to our friendly types
-        const mappedColumns = (result.columns || []).map(col => ({
-          ...col,
-          friendlyType: mapSqlTypeToFriendlyType(col.dataType)
-        }));
+        // Process columns and identify special types from comments
+        const mappedColumns = (result.columns || []).map(col => {
+          // Determine column type including List and Reference types from comments
+          const friendlyType = mapSqlTypeToFriendlyType(col.dataType, col.comment);
+          
+          // Process list values if it's a List column
+          const listValues = friendlyType === 'List' 
+            ? extractListValues(col.comment)
+            : [];
+            
+          // Process reference info if it's a Reference column
+          const referenceInfo = friendlyType === 'Reference'
+            ? extractReferenceInfo(col.comment)
+            : { table: '', displayColumns: [] };
+            
+          return {
+            ...col,
+            friendlyType,
+            listValues,
+            referenceTable: referenceInfo.table,
+            displayColumns: referenceInfo.displayColumns
+          };
+        });
         
         // Find the primary key column
         const pkColumn = mappedColumns.find(col => col.isPrimaryKey);
@@ -103,6 +160,12 @@ const DataGridView = ({ table, onBack }) => {
         
         setColumns(mappedColumns);
         initializeEmptyRow(mappedColumns);
+        
+        // Fetch reference data for any reference columns
+        const refColumns = mappedColumns.filter(col => col.friendlyType === 'Reference');
+        if (refColumns.length > 0) {
+          fetchReferenceTables(refColumns);
+        }
       } else {
         setError(result.error || 'Failed to fetch table structure');
       }
@@ -112,6 +175,66 @@ const DataGridView = ({ table, onBack }) => {
       logDebug('fetchTableStructureError', { message: error.message, stack: error.stack });
     } finally {
       setIsLoading(false);
+    }
+  };
+  
+  // Fetch reference tables data
+  const fetchReferenceTables = async (referenceColumns) => {
+    setIsLoadingReference(true);
+    
+    try {
+      // Get unique reference tables
+      const uniqueTables = Array.from(new Set(
+        referenceColumns.map(col => col.referenceTable)
+      )).filter(tableName => tableName);
+      
+      const tables = {};
+      const data = {};
+      
+      // First, fetch the list of available tables to get the IDs
+      const tablesResponse = await fetch('http://localhost:5000/api/tables');
+      const tablesResult = await tablesResponse.json();
+      
+      if (tablesResponse.ok && tablesResult.tables) {
+        // Create a map of table names to table IDs
+        const tableMap = {};
+        tablesResult.tables.forEach(t => {
+          tableMap[t.name.toLowerCase()] = t.id;
+        });
+        
+        // For each unique reference table, fetch the data
+        for (const tableName of uniqueTables) {
+          const tableId = tableMap[tableName.toLowerCase()];
+          
+          if (tableId) {
+            try {
+              // Fetch the table data
+              const dataResponse = await fetch(`http://localhost:5000/api/tables/${tableId}/data`);
+              const dataResult = await dataResponse.json();
+              
+              if (dataResponse.ok && dataResult.data) {
+                // Store the reference table ID and data
+                tables[tableName] = tableId;
+                data[tableName] = dataResult.data;
+                
+                logDebug('referenceData', { 
+                  tableName, 
+                  recordCount: dataResult.data.length 
+                });
+              }
+            } catch (err) {
+              console.error(`Error fetching reference data for ${tableName}:`, err);
+            }
+          }
+        }
+        
+        setReferenceTables(tables);
+        setReferenceData(data);
+      }
+    } catch (error) {
+      console.error('Error fetching reference tables:', error);
+    } finally {
+      setIsLoadingReference(false);
     }
   };
 
@@ -125,9 +248,11 @@ const DataGridView = ({ table, onBack }) => {
       switch (friendlyType) {
         case 'Text':
         case 'Long Text':
+        case 'List':
           emptyRow[col.name] = '';
           break;
         case 'Number':
+        case 'Reference':
           emptyRow[col.name] = null;
           break;
         case 'Date':
@@ -236,6 +361,16 @@ const DataGridView = ({ table, onBack }) => {
       case 'Date':
         if (value !== '' && value !== null && isNaN(Date.parse(value))) {
           return `${column.name} must be a valid date`;
+        }
+        break;
+      case 'List':
+        if (value && column.listValues && !column.listValues.includes(value)) {
+          return `${column.name} must be one of the allowed values: ${column.listValues.join(', ')}`;
+        }
+        break;
+      case 'Reference':
+        if (value !== null && value !== '' && isNaN(Number(value))) {
+          return `${column.name} must be a valid reference ID`;
         }
         break;
       default:
@@ -360,6 +495,7 @@ const DataGridView = ({ table, onBack }) => {
       setIsSaving(false);
     }
   };
+  
   // Delete row
   const deleteRow = async (row) => {
     if (!primaryKeyColumn) {
@@ -456,16 +592,44 @@ const DataGridView = ({ table, onBack }) => {
   };
 
   // Format cell value for display
-  const formatCellValue = (value, friendlyType) => {
+  const formatCellValue = (value, column) => {
     if (value === null || value === undefined) {
       return '';
     }
+    
+    const friendlyType = column.friendlyType || mapSqlTypeToFriendlyType(column.dataType);
     
     switch (friendlyType) {
       case 'Date':
         return value ? new Date(value).toLocaleDateString() : '';
       case 'True/False':
         return value === true ? 'Yes' : value === false ? 'No' : '';
+      case 'Reference':
+        // Try to look up the reference value
+        if (column.referenceTable && referenceData[column.referenceTable]) {
+          const refItem = referenceData[column.referenceTable].find(
+            item => item[`${column.referenceTable}ID`] === value || 
+                   item['ID'] === value
+          );
+          
+          if (refItem) {
+            // Display the reference item using display columns if available
+            if (column.displayColumns && column.displayColumns.length > 0) {
+              return column.displayColumns
+                .map(dc => refItem[dc])
+                .filter(v => v !== undefined && v !== null)
+                .join(' - ');
+            }
+            
+            // Fallback: show the first non-ID field
+            const firstNonIdField = Object.keys(refItem).find(
+              key => !key.toLowerCase().endsWith('id') && refItem[key] !== null
+            );
+            
+            return firstNonIdField ? refItem[firstNonIdField] : value;
+          }
+        }
+        return value; // Fallback to just showing the ID
       default:
         return value;
     }
@@ -514,6 +678,172 @@ const DataGridView = ({ table, onBack }) => {
       setError(null);
     } catch (error) {
       setError(`API test failed: ${error.message}`);
+    }
+  };
+
+  // Render the field for a specific column type in the modal
+  const renderFieldInput = (column) => {
+    const isPrimaryKey = column.isPrimaryKey || (primaryKeyColumn && column.name === primaryKeyColumn);
+    const friendlyType = column.friendlyType || mapSqlTypeToFriendlyType(column.dataType);
+    const value = currentRow[column.name];
+    const hasError = !!validationErrors[column.name];
+    
+    // Enhanced base classes for all inputs
+    const baseClasses = `block w-full rounded-md shadow-sm text-base py-3 px-4
+                        ${hasError 
+                          ? 'border-2 border-red-400 focus:border-red-500 focus:ring-red-500' 
+                          : 'border border-gray-300 focus:border-blue-500 focus:ring-blue-500'}`;
+    
+    if (isPrimaryKey && modalMode === 'add') {
+      return (
+        <input
+          type="text"
+          value={value || ''}
+          className="block w-full rounded-md border border-gray-200 bg-gray-100 text-gray-500 py-3 px-4 text-base cursor-not-allowed"
+          readOnly
+          placeholder="Auto-generated ID"
+        />
+      );
+    } 
+    
+    if (isPrimaryKey && modalMode === 'edit') {
+      return (
+        <input
+          type="text"
+          value={value || ''}
+          className="block w-full rounded-md border border-gray-200 bg-gray-100 text-gray-500 py-3 px-4 text-base cursor-not-allowed"
+          readOnly
+        />
+      );
+    }
+    
+    // Special rendering for List columns
+    if (friendlyType === 'List') {
+      return (
+        <select
+          value={value || ''}
+          onChange={(e) => handleInputChange(column.name, e.target.value)}
+          className={baseClasses}
+        >
+          <option value="">-- Select a value --</option>
+          {column.listValues.map(val => (
+            <option key={val} value={val}>{val}</option>
+          ))}
+        </select>
+      );
+    }
+    
+    // Special rendering for Reference columns
+    if (friendlyType === 'Reference') {
+      const refTableName = column.referenceTable;
+      const refData = referenceData[refTableName] || [];
+      const displayColumns = column.displayColumns || ['ID'];
+      
+      return (
+        <select
+          value={value || ''}
+          onChange={(e) => handleInputChange(column.name, e.target.value ? Number(e.target.value) : null)}
+          className={baseClasses}
+        >
+          <option value="">-- Select a value --</option>
+          {refData.map(item => {
+            const idField = `${refTableName}ID` in item ? `${refTableName}ID` : 'ID';
+            const id = item[idField];
+            
+            // Create display text using the selected display columns
+            const displayText = displayColumns
+              .map(dc => item[dc])
+              .filter(val => val !== undefined && val !== null)
+              .join(' - ');
+              
+            return (
+              <option key={id} value={id}>
+                {displayText || id}
+              </option>
+            );
+          })}
+        </select>
+      );
+    }
+    
+    // Handle other field types (reusing original code)
+    switch (friendlyType) {
+      case 'Long Text':
+        return (
+          <textarea
+            value={value || ''}
+            onChange={(e) => handleInputChange(column.name, e.target.value)}
+            className={`${baseClasses} min-h-[120px] resize-y`}
+            placeholder={`Enter ${column.name}`}
+          />
+        );
+      case 'Number':
+        return (
+          <input
+            type="number"
+            value={value !== null && value !== undefined ? value : ''}
+            onChange={(e) => handleInputChange(column.name, e.target.value === '' ? null : Number(e.target.value))}
+            className={baseClasses}
+            placeholder={`Enter ${column.name}`}
+            step="any"
+          />
+        );
+      case 'Date':
+        return (
+          <div className="relative">
+            <input
+              type="date"
+              value={value ? new Date(value).toISOString().split('T')[0] : ''}
+              onChange={(e) => handleInputChange(column.name, e.target.value)}
+              className={`${baseClasses} pr-10`}
+            />
+            <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+            </div>
+          </div>
+        );
+      case 'True/False':
+        return (
+          <div className="flex items-center">
+            <div className="relative inline-block w-12 mr-2 align-middle select-none">
+              <input
+                type="checkbox"
+                id={`checkbox-${column.name}`}
+                checked={value === true}
+                onChange={(e) => handleInputChange(column.name, e.target.checked)}
+                className="sr-only"
+              />
+              <label
+                htmlFor={`checkbox-${column.name}`}
+                className={`block overflow-hidden h-6 rounded-full cursor-pointer transition-colors duration-200 ease-in-out ${
+                  value ? 'bg-blue-500' : 'bg-gray-300'
+                }`}
+              >
+                <span
+                  className={`block h-6 w-6 rounded-full bg-white shadow transform transition-transform duration-200 ease-in-out ${
+                    value ? 'translate-x-6' : 'translate-x-0'
+                  }`}
+                ></span>
+              </label>
+            </div>
+            <span className="text-base text-gray-700 font-medium">
+              {value ? 'Yes' : 'No'}
+            </span>
+          </div>
+        );
+      // Text field (default)
+      default:
+        return (
+          <input
+            type="text"
+            value={value || ''}
+            onChange={(e) => handleInputChange(column.name, e.target.value)}
+            className={baseClasses}
+            placeholder={`Enter ${column.name}`}
+          />
+        );
     }
   };
 
@@ -569,10 +899,24 @@ const DataGridView = ({ table, onBack }) => {
         </div>
       )}
 
+      {/* Reference Data Loading Indicator */}
+      {!isLoading && isLoadingReference && (
+        <div className="bg-blue-50 border border-blue-200 text-blue-700 px-4 py-3 rounded-md mb-4 flex items-center">
+          <svg className="animate-spin h-5 w-5 mr-3 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          Loading reference data...
+        </div>
+      )}
+
       {/* Debug Info */}
       {primaryKeyColumn && (
         <div className="mb-4 px-3 py-2 bg-gray-100 text-gray-700 rounded-md text-sm">
           <strong>Debug Info:</strong> Primary key column: <span className="font-semibold">{primaryKeyColumn}</span>
+          {Object.keys(referenceTables).length > 0 && (
+            <span className="ml-3">| Reference tables: <span className="font-semibold">{Object.keys(referenceTables).join(', ')}</span></span>
+          )}
         </div>
       )}
 
@@ -586,6 +930,29 @@ const DataGridView = ({ table, onBack }) => {
             <pre>{JSON.stringify(debugInfo, null, 2)}</pre>
           </div>
         </details>
+      )}
+
+      {/* Column type badges */}
+      {!isLoading && columns.length > 0 && (
+        <div className="mb-4 flex flex-wrap gap-2">
+          {columns.some(col => col.friendlyType === 'List') && (
+            <span className="px-2 py-1 bg-green-100 text-green-800 text-xs font-medium rounded-full flex items-center">
+              <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+              </svg>
+              List Columns
+            </span>
+          )}
+          
+          {columns.some(col => col.friendlyType === 'Reference') && (
+            <span className="px-2 py-1 bg-purple-100 text-purple-800 text-xs font-medium rounded-full flex items-center">
+              <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+              </svg>
+              Reference Columns
+            </span>
+          )}
+        </div>
       )}
 
       {/* Add New Row Button */}
@@ -618,6 +985,12 @@ const DataGridView = ({ table, onBack }) => {
                     {column.name === primaryKeyColumn && (
                       <span className="ml-1 text-xs text-blue-500">PK</span>
                     )}
+                    {column.friendlyType === 'List' && (
+                      <span className="ml-1 text-xs text-green-500">LIST</span>
+                    )}
+                    {column.friendlyType === 'Reference' && (
+                      <span className="ml-1 text-xs text-purple-500">REF</span>
+                    )}
                   </th>
                 ))}
                 <th
@@ -645,8 +1018,13 @@ const DataGridView = ({ table, onBack }) => {
                     {columns.map((column) => (
                       <td key={column.name} className="px-6 py-4">
                         <div className={`text-sm text-gray-900 ${column.friendlyType === 'Long Text' ? '' : 'whitespace-nowrap'}`}>
-                          {formatCellValue(row[column.name], column.friendlyType)}
+                          {formatCellValue(row[column.name], column)}
                         </div>
+                        {column.friendlyType === 'Reference' && row[column.name] && (
+                          <div className="text-xs text-gray-500">
+                            ID: {row[column.name]}
+                          </div>
+                        )}
                       </td>
                     ))}
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
@@ -710,9 +1088,6 @@ const DataGridView = ({ table, onBack }) => {
             <span className="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
 
             {/* Modal panel */}
-            // Updated Modal Panel with responsive width and two-column layou
-
-            {/* Modal panel */}
             <div className={`inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle ${columns.length > 5 ? 'sm:max-w-4xl' : 'sm:max-w-xl'} w-full`}>
               <div className="bg-white px-6 pt-5 pb-4 sm:p-6 sm:pb-4">
                 <h3 className="text-xl leading-6 font-semibold text-gray-900 mb-6" id="modal-title">
@@ -723,15 +1098,7 @@ const DataGridView = ({ table, onBack }) => {
                 <div className={`${columns.length > 5 ? 'grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5' : 'space-y-6'}`}>
                   {columns.map((column) => {
                     const isPrimaryKey = column.isPrimaryKey || (primaryKeyColumn && column.name === primaryKeyColumn);
-                    const friendlyType = column.friendlyType || mapSqlTypeToFriendlyType(column.dataType);
-                    const value = currentRow[column.name];
                     const hasError = !!validationErrors[column.name];
-                    
-                    // Enhanced base classes for all inputs
-                    const baseClasses = `block w-full rounded-md shadow-sm text-base py-3 px-4
-                                        ${hasError 
-                                          ? 'border-2 border-red-400 focus:border-red-500 focus:ring-red-500' 
-                                          : 'border border-gray-300 focus:border-blue-500 focus:ring-blue-500'}`;
                     
                     return (
                       <div key={column.name} className={columns.length > 5 ? '' : 'mb-5'}>
@@ -739,91 +1106,12 @@ const DataGridView = ({ table, onBack }) => {
                           {column.name}
                           {!column.isNullable && !isPrimaryKey && <span className="text-red-500 ml-1">*</span>}
                           {isPrimaryKey && <span className="ml-1 text-xs bg-blue-100 text-blue-600 px-2 py-1 rounded-full">Primary Key</span>}
+                          {column.friendlyType === 'List' && <span className="ml-1 text-xs bg-green-100 text-green-600 px-2 py-1 rounded-full">List</span>}
+                          {column.friendlyType === 'Reference' && <span className="ml-1 text-xs bg-purple-100 text-purple-600 px-2 py-1 rounded-full">Reference</span>}
                         </label>
                         
-                        {/* Field type rendering code stays the same as before */}
-                        {isPrimaryKey && modalMode === 'add' ? (
-                          <input
-                            type="text"
-                            value={value || ''}
-                            className="block w-full rounded-md border border-gray-200 bg-gray-100 text-gray-500 py-3 px-4 text-base cursor-not-allowed"
-                            readOnly
-                            placeholder="Auto-generated ID"
-                          />
-                        ) : isPrimaryKey && modalMode === 'edit' ? (
-                          <input
-                            type="text"
-                            value={value || ''}
-                            className="block w-full rounded-md border border-gray-200 bg-gray-100 text-gray-500 py-3 px-4 text-base cursor-not-allowed"
-                            readOnly
-                          />
-                        ) : 
-                        friendlyType === 'Long Text' ? (
-                          <textarea
-                            value={value || ''}
-                            onChange={(e) => handleInputChange(column.name, e.target.value)}
-                            className={`${baseClasses} min-h-[120px] resize-y`}
-                            placeholder={`Enter ${column.name}`}
-                          />
-                        ) : friendlyType === 'Number' ? (
-                          <input
-                            type="number"
-                            value={value !== null && value !== undefined ? value : ''}
-                            onChange={(e) => handleInputChange(column.name, e.target.value === '' ? null : Number(e.target.value))}
-                            className={baseClasses}
-                            placeholder={`Enter ${column.name}`}
-                            step="any"
-                          />
-                        ) : friendlyType === 'Date' ? (
-                          <div className="relative">
-                            <input
-                              type="date"
-                              value={value ? new Date(value).toISOString().split('T')[0] : ''}
-                              onChange={(e) => handleInputChange(column.name, e.target.value)}
-                              className={`${baseClasses} pr-10`}
-                            />
-                            <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
-                              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                              </svg>
-                            </div>
-                          </div>
-                        ) : friendlyType === 'True/False' ? (
-                          <div className="flex items-center">
-                            <div className="relative inline-block w-12 mr-2 align-middle select-none">
-                              <input
-                                type="checkbox"
-                                id={`checkbox-${column.name}`}
-                                checked={value === true}
-                                onChange={(e) => handleInputChange(column.name, e.target.checked)}
-                                className="sr-only"
-                              />
-                              <label
-                                htmlFor={`checkbox-${column.name}`}
-                                className={`block overflow-hidden h-6 rounded-full cursor-pointer transition-colors duration-200 ease-in-out ${
-                                  value ? 'bg-blue-500' : 'bg-gray-300'
-                                }`}
-                              >
-                                <span
-                                  className={`block h-6 w-6 rounded-full bg-white shadow transform transition-transform duration-200 ease-in-out ${
-                                    value ? 'translate-x-6' : 'translate-x-0'
-                                  }`}
-                                ></span>
-                              </label>
-                            </div>
-                            <span className="text-base text-gray-700 font-medium">
-                              {value ? 'Yes' : 'No'}
-                            </span>
-                          </div>
-                        ) : (
-                          <input
-                            type="text"
-                            value={value || ''}
-                            onChange={(e) => handleInputChange(column.name, e.target.value)}
-                            className={baseClasses}
-                            placeholder={`Enter ${column.name}`}
-                          />
-                        )}
+                        {/* Render the appropriate input field based on column type */}
+                        {renderFieldInput(column)}
                         
                         {validationErrors[column.name] && (
                           <p className="mt-2 text-sm text-red-600 flex items-center">
@@ -831,6 +1119,29 @@ const DataGridView = ({ table, onBack }) => {
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                             </svg>
                             {validationErrors[column.name]}
+                          </p>
+                        )}
+                        
+                        {/* List values help text */}
+                        {column.friendlyType === 'List' && column.listValues && column.listValues.length > 0 && (
+                          <p className="mt-1 text-xs text-gray-500">
+                            Allowed values: {column.listValues.join(', ')}
+                          </p>
+                        )}
+                        
+                        {/* Reference table help text */}
+                        {column.friendlyType === 'Reference' && column.referenceTable && (
+                          <p className="mt-1 text-xs text-gray-500">
+                            References {column.referenceTable} table
+                            {isLoadingReference && (
+                              <span className="ml-2 inline-flex items-center">
+                                <svg className="animate-spin h-3 w-3 mr-1 text-gray-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                Loading...
+                              </span>
+                            )}
                           </p>
                         )}
                       </div>
